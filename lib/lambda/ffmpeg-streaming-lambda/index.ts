@@ -24,7 +24,7 @@ exports.handler = async function (event: Record<string, any>) {
       listObjectsResponse.Contents?.map((object) => object.Key as string) || [];
 
     const getNextImageFromS3 = async function* (imageFileNames: string[]) {
-      for (let i = 0; i <= imageFileNames.length - 1; i++) {
+      for (let i = 0; i <= 20 && i <= imageFileNames.length - 1; i++) {
         const filename = imageFileNames[i];
 
         const { Body: body } = await S3.getObject({
@@ -39,6 +39,10 @@ exports.handler = async function (event: Record<string, any>) {
     };
 
     const s3BodyPassthrough = new Stream.PassThrough();
+
+    s3BodyPassthrough.on("close", () => {
+      console.log(">>>> s3BodyPassthrough closed");
+    });
 
     s3BodyPassthrough.on("end", () => {
       console.log(">>>> s3BodyPassthrough ended");
@@ -64,30 +68,35 @@ exports.handler = async function (event: Record<string, any>) {
 
     const converter = new Converter();
 
-    // const converterOutputStream = converter.createOutputStream({
+    const converterOutputStream = converter.createOutputStream({
+      vcodec: "libx264",
+      pix_fmt: "yuv420p",
+      r: 30,
+    });
+
+    // converter.createOutputToFile(`${jobId}.mp4`, {
     //   vcodec: "libx264",
     //   pix_fmt: "yuv420p",
     // });
 
-    converter.createOutputToFile(`${jobId}.mp4`, {
-      vcodec: "libx264",
-      pix_fmt: "yuv420p",
+    converterOutputStream.pipe(s3BodyPassthrough);
+
+    converterOutputStream.on("close", () => {
+      console.log(">>>> converterOutputStream closed");
     });
 
-    // converterOutputStream.pipe(s3BodyPassthrough);
+    converterOutputStream.on("end", async () => {
+      console.log(">>>> converterOutputStream ended");
+      await uploadFromStream();
+    });
 
-    // converterOutputStream.on("end", async () => {
-    //   console.log(">>>> converterOutputStream ended");
-    //   await uploadFromStream();
-    // });
+    converterOutputStream.on("data", (data) => {
+      console.log(">>>> converterOutputStream data: ", data);
+    });
 
-    // converterOutputStream.on("data", (data) => {
-    //   console.log(">>>> converterOutputStream data: ", data);
-    // });
-
-    // converterOutputStream.on("error", (error) => {
-    //   console.log(">>>> converterOutputStream error: ", error);
-    // });
+    converterOutputStream.on("error", (error) => {
+      console.log(">>>> converterOutputStream error: ", error);
+    });
 
     const converterInputStream = converter.createInputStream({
       f: "image2pipe",
@@ -96,7 +105,6 @@ exports.handler = async function (event: Record<string, any>) {
 
     converterInputStream.on("end", () => {
       console.log(">>>> converterInputStream ended");
-      uploadFromStream();
     });
 
     converterInputStream.on("data", (data) => {
@@ -139,8 +147,7 @@ exports.handler = async function (event: Record<string, any>) {
       console.log("🚀 > forawait > image.body.length", body.length);
       // const png = await jimp.read(image.body as Buffer);
       // const bmp = await png.getBufferAsync(jimp.MIME_BMP);
-      // console.log("🚀 > forawait > bmp", bmp);
-      converterInputStream.write(image.body, "buffer");
+      converterInputStream.write(image.body);
     }
     converterInputStream.end();
     console.log("done pushing frames to pipe");
