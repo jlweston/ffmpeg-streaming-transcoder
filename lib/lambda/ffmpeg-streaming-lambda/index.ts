@@ -1,15 +1,40 @@
 import * as AWS from "aws-sdk";
-import * as jimp from "jimp";
-import { Stream, PassThrough } from "stream";
 import { spawn } from "child_process";
 import { v4 } from "uuid";
-// import * as ffmpeg from "fluent-ffmpeg";
-// import * as ffmpegPath from "ffmpeg-static";
-
-import { Converter } from "ffmpeg-stream";
+import { createReadStream, readdir } from "fs";
 
 const S3 = new AWS.S3();
 const bucketName = process.env.BUCKET_NAME || "";
+const ffmpegPath = process.env.FFMPEG_PATH || "";
+
+const getFileAsBuffer = (filepath: string): Promise<Buffer> => {
+  return new Promise((resolve, reject) => {
+    try {
+      const stream = createReadStream(filepath);
+      stream.on("data", (data) => {
+        resolve(data);
+      });
+    } catch (error) {
+      console.log(`Failed to fetch ${filepath}`);
+      reject(error);
+    }
+  });
+};
+
+const getNextImageFromS3 = async function* (imageFileNames: string[]) {
+  for (let i = 0; i <= 20 && i <= imageFileNames.length - 1; i++) {
+    const filename = imageFileNames[i];
+
+    const { Body: body } = await S3.getObject({
+      Bucket: bucketName,
+      Key: filename,
+    }).promise();
+
+    if (filename.indexOf(".mp4") > 0) continue;
+
+    yield { filename, body };
+  }
+};
 
 exports.handler = async function (event: Record<string, any>) {
   const jobId = v4();
@@ -23,136 +48,66 @@ exports.handler = async function (event: Record<string, any>) {
     const imageFileNames =
       listObjectsResponse.Contents?.map((object) => object.Key as string) || [];
 
-    const getNextImageFromS3 = async function* (imageFileNames: string[]) {
-      for (let i = 0; i <= 20 && i <= imageFileNames.length - 1; i++) {
-        const filename = imageFileNames[i];
-
-        const { Body: body } = await S3.getObject({
-          Bucket: bucketName,
-          Key: filename,
-        }).promise();
-
-        if (filename.indexOf(".mp4") > 0) continue;
-
-        yield { filename, body };
-      }
-    };
-
-    const s3BodyPassthrough = new Stream.PassThrough();
-
-    s3BodyPassthrough.on("close", () => {
-      console.log(">>>> s3BodyPassthrough closed");
-    });
-
-    s3BodyPassthrough.on("end", () => {
-      console.log(">>>> s3BodyPassthrough ended");
-    });
-
-    s3BodyPassthrough.on("data", (data) => {
-      console.log(">>>> s3BodyPassthrough data: ", data);
-    });
-
-    s3BodyPassthrough.on("error", (error) => {
-      console.log(">>>> s3BodyPassthrough error: ", error);
-    });
-
-    const uploadFromStream = async () => {
+    const uploadFromFile = async (filepath: string): Promise<void> => {
       await S3.putObject({
         ACL: "private",
-        Body: s3BodyPassthrough,
+        Body: await getFileAsBuffer(filepath),
         Bucket: bucketName,
         ContentType: "application/zip",
         Key: `${jobId}.mp4`,
-      });
+      }).promise();
     };
 
-    const converter = new Converter();
+    await new Promise(async (resolve, reject) => {
+      // spawn a child process to which we'll stream individual frames
+      console.log("creating child process");
+      const ffmpeg = spawn(
+        ffmpegPath,
+        [
+          "-r",
+          "30",
+          "-f",
+          "image2pipe",
+          "-color_primaries",
+          "1",
+          "-color_trc",
+          "1",
+          "-pix_fmt",
+          "yuv420p",
+          "-i",
+          "pipe:0",
+          "-vcodec",
+          "libx264",
+          "-f",
+          "mp4",
+          "/tmp/video.mp4",
+        ],
+        { stdio: "pipe" }
+      );
 
-    const converterOutputStream = converter.createOutputStream({
-      vcodec: "libx264",
-      pix_fmt: "yuv420p",
-      r: 30,
+      ffmpeg.stdin.on("close", async () => {
+        console.log(">>>> childProcess.stdin ended");
+        readdir("/tmp", (err, files) => {
+          files.forEach((file) => {
+            console.log(file);
+          });
+        });
+        await uploadFromFile("/tmp/video.mp4");
+        resolve("rendered video uploaded to S3");
+      });
+
+      console.log("pushing frames to pipe");
+      for await (const image of getNextImageFromS3(imageFileNames)) {
+        console.log("🚀 > forawait > image", image.filename);
+        const body = image.body as Buffer;
+        // console.log("🚀 > forawait > image.body.length", body.length);
+        // const png = await jimp.read(image.body as Buffer);
+        // const bmp = await png.getBufferAsync(jimp.MIME_BMP);
+        ffmpeg.stdin.write(body);
+      }
+      ffmpeg.stdin.end();
+      console.log("done pushing frames to pipe");
     });
-
-    // converter.createOutputToFile(`${jobId}.mp4`, {
-    //   vcodec: "libx264",
-    //   pix_fmt: "yuv420p",
-    // });
-
-    converterOutputStream.pipe(s3BodyPassthrough);
-
-    converterOutputStream.on("close", () => {
-      console.log(">>>> converterOutputStream closed");
-    });
-
-    converterOutputStream.on("end", async () => {
-      console.log(">>>> converterOutputStream ended");
-      await uploadFromStream();
-    });
-
-    converterOutputStream.on("data", (data) => {
-      console.log(">>>> converterOutputStream data: ", data);
-    });
-
-    converterOutputStream.on("error", (error) => {
-      console.log(">>>> converterOutputStream error: ", error);
-    });
-
-    const converterInputStream = converter.createInputStream({
-      f: "image2pipe",
-      r: 30,
-    });
-
-    converterInputStream.on("end", () => {
-      console.log(">>>> converterInputStream ended");
-    });
-
-    converterInputStream.on("data", (data) => {
-      console.log(">>>> converterInputStream data: ", data);
-    });
-
-    converterInputStream.on("error", (error) => {
-      console.log(">>>> converterInputStream error: ", error);
-    });
-
-    const images = getNextImageFromS3(imageFileNames);
-
-    // spawn a child process to which we'll stream individual frames
-    // console.log("creating child process");
-    // const childProcess = spawn(
-    //   ffmpegPath.default,
-    //   [
-    //     "-y",
-    //     "-f",
-    //     "mp4",
-    //     "-s 1920x1080",
-    //     "-framerate 30",
-    //     "-pix_fmt yuv420p",
-    //     // "-i /tmp/audio.mp3",
-    //     // audio args
-    //     "-i pipe:0",
-    //     "-vcodec",
-    //     "h.264",
-    //     "pipe:1",
-    //   ],
-    //   { stdio: "pipe" }
-    // );
-
-    // converter.createOutputToFile(`${jobId}.mp4`, {});
-
-    console.log("pushing frames to pipe");
-    for await (const image of images) {
-      console.log("🚀 > forawait > image", image);
-      const body = image.body as Buffer;
-      console.log("🚀 > forawait > image.body.length", body.length);
-      // const png = await jimp.read(image.body as Buffer);
-      // const bmp = await png.getBufferAsync(jimp.MIME_BMP);
-      converterInputStream.write(image.body);
-    }
-    converterInputStream.end();
-    console.log("done pushing frames to pipe");
-
-    await converter.run();
 
     const body = {
       images: listObjectsResponse.Contents?.map(function (e) {
