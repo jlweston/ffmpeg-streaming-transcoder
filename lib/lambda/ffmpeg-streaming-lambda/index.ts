@@ -75,7 +75,7 @@ const renderVideo = async (output: string) => {
     });
 
     // We only want to continue when ffmpeg has finished all processing, including writing to disk
-    ffmpeg.stdin.on("close", () => {
+    ffmpeg.on("close", () => {
       console.log("on close");
       resolve({ hasError: false, message: "success" });
     });
