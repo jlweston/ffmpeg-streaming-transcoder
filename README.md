@@ -1,15 +1,29 @@
-# Welcome to your CDK TypeScript project!
+# ffmpeg-streaming-lambda
 
-You should explore the contents of this project. It demonstrates a CDK app with an instance of a stack (`FfmpegStreamingLambdaStack`)
-which contains an Amazon SQS queue that is subscribed to an Amazon SNS topic.
+Creates an MP4 video file out of individual image frames streamed from S3 and
+uploads the resulting video back to S3.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+## Getting started
+
+First, create a zip file containing a series of frames as PNG files.
+The files should be named such that they will be listed in alphabetical order
+when the Lambda function uses the S3::ListObjects operation. You can generate
+frames from an existing video using the following command:
+
+```
+ffmpeg -i input-video.mp4 frames/frame-%05d.png
+```
+
+Save the zip file at `lib/assets/images.zip` so CDK's S3 Deployment can find it.
+
+Next, run `cdk deploy` to deploy the stack. This will upload the contents of the
+zip file to the target bucket and then deploy the Lambda function.
+
+Run the lambda function from the AWS console (the test event content is not
+important).
 
 ## Useful commands
 
- * `npm run build`   compile typescript to js
- * `npm run watch`   watch for changes and compile
- * `npm run test`    perform the jest unit tests
- * `cdk deploy`      deploy this stack to your default AWS account/region
- * `cdk diff`        compare deployed stack with current state
- * `cdk synth`       emits the synthesized CloudFormation template
+- `cdk deploy` deploy this stack to your default AWS account/region
+- `cdk diff` compare deployed stack with current state
+- `cdk synth` emits the synthesized CloudFormation template
