@@ -32,6 +32,7 @@ export class FfmpegStreamingLambdaStack extends Stack {
           S3Deployment.Source.asset(path.join(__dirname, "assets/images.zip")),
         ],
         destinationBucket: bucket,
+        destinationKeyPrefix: "input",
         memoryLimit: 1024,
       }
     );
@@ -57,7 +58,7 @@ export class FfmpegStreamingLambdaStack extends Stack {
       },
     });
 
-    bucket.grantRead(lambda);
+    bucket.grantReadWrite(lambda);
 
     new CfnOutput(this, "bucketName", { value: bucket.bucketName });
   }
